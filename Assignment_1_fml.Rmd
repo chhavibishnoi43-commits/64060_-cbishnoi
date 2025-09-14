@@ -1,0 +1,94 @@
+---
+title: "Assignment-1 FML"
+author: "CHHAVI BISHNOI"
+date: "2025-09-09"
+output: html_document
+---
+
+
+```{r}
+#importing library for plots
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)   
+
+```
+
+
+```{r}
+# Import dataset  
+data <- read.csv("mental_health_remote_workers.csv", stringsAsFactors = TRUE)
+
+# Display first few rows
+head(data)
+
+```
+
+
+
+```{r}
+#Quantitative Variables
+
+
+summary(data$Age)
+
+summary(data$Burnout_Score)
+
+summary(data$Hours_Worked_Per_Week)
+
+```
+
+
+```{r}
+#Categorical Variables
+
+# Frequency of Gender, Work Mode, Mental Health Status
+table(data$Gender)
+
+table(data$Work_Mode)
+
+table(data$Mental_Health_Status)
+
+```
+
+```{r}
+#Transform a Variable
+
+# Transform Burnout Score into categories
+data$Burnout_Level <- ifelse(data$Burnout_Score < 40, "Low",
+                      ifelse(data$Burnout_Score < 70, "Moderate", "High"))
+
+table(data$Burnout_Level)
+
+# Create a new variable: Productivity per Hour
+data$Productivity_Per_Hour <- data$Productivity_Score / data$Hours_Worked_Per_Week
+summary(data$Productivity_Per_Hour)
+
+```
+
+
+```{r}
+#Plotting a Quantitative Variable
+
+# Histogram of Sleep Hours per Day
+ggplot(data, aes(x = Sleep_Hours_Per_Day)) +
+  geom_histogram(binwidth = 0.5, fill = "red", color = "white") +
+  labs(title = "Histogram of Sleep Hours", x = "Sleep Hours per Day", y = "Count")
+
+
+```
+
+
+```{r}
+#Scatterplot of Two Quantitative Variables
+
+# Scatterplot: Hours Worked vs Burnout Score, colored by Work Mode
+ggplot(data, aes(x = Hours_Worked_Per_Week, y = Burnout_Score, color = Work_Mode)) +
+  geom_point(alpha = 0.7) +
+  labs(title = "Hours Worked vs Burnout Score by Work Mode",
+       x = "Hours Worked per Week", y = "Burnout Score")
+
+```
+
+
+
+
