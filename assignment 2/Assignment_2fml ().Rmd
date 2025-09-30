@@ -1,0 +1,250 @@
+---
+title: "Assignment_2fml"
+author: "Chhavi Bishnoi"
+date: "2025-09-29"
+output: html_document
+---
+
+```{r}
+library(caret)   # tools for splitting data, preprocessing, and running k-NN
+library(dplyr)   # functions to clean, filter, and transform data smoothly
+library(readr)   # reading CSV files
+library(tibble)  # tibble() for neat one-row data frames
+```
+
+
+#Load the data into R
+```{r}
+#reading csv file
+bank_reports <- read_csv("C:/Users/chhav/Downloads/UniversalBank.csv") 
+
+#make column name easy to interpret for R
+names(bank_reports) <- make.names(names(bank_reports))
+
+```
+
+
+#Clean the data
+```{r}
+#Remove ID and ZIP.Code
+bank_new_reports <- bank_reports %>%   
+  select(-ID, -ZIP.Code)
+
+# Make the target variable a *factor* with labels "0" and "1"
+bank_new_reports$Personal.Loan <- factor(bank_new_reports$Personal.Loan,
+                                         levels = c(0,1), labels = c("0","1"))
+
+#convert the Education into a factor with categories 1/2/3.
+bank_new_reports$Education <- factor(bank_new_reports$Education, levels = c(1,2,3))
+
+
+```
+
+
+```{r}
+#Turn categorical inputs into numbers (Dummies)
+
+#Choose only INPUT columns (everything except the target Personal.Loan).
+input_features <- setdiff(names(bank_new_reports), "Personal.Loan")
+
+#convert categoricals to 0/1 columns (on TRAIN inputs only).
+edu_dummy <- dummyVars(~ ., data = bank_new_reports[, input_features, drop = FALSE],
+                 fullRank = FALSE)
+
+```
+Q-1 Training and validation
+
+```{r}
+#splitting data
+set.seed(123)
+Index_Train <- createDataPartition(bank_new_reports$Personal.Loan, p = 0.60, list = FALSE)
+train_bank_new_reports <- bank_new_reports[Index_Train, ]     #training data(60%)
+valid_bank_new_reports <- bank_new_reports[-Index_Train, ]    #validation dat(40%)
+```
+
+
+```{r}
+# Apply that same dummy mapping to TRAIN and VALID inputs.
+train_X <- predict(edu_dummy, newdata = train_bank_new_reports[, input_features, drop = FALSE]) %>% as.data.frame()
+valid_X <- predict(edu_dummy, newdata = valid_bank_new_reports[, input_features, drop = FALSE]) %>% as.data.frame()
+
+#Pull out the answer/label (0/1) for Train and Validation into separate vectors.
+train_y <- train_bank_new_reports$Personal.Loan
+valid_y <- valid_bank_new_reports$Personal.Loan
+```
+
+```{r}
+#Put all numeric columns on the same scale (Standardize)
+
+pp <- preProcess(train_X, method = c("center", "scale"))
+train_X_norn <- predict(pp, train_X)
+valid_X_norn <- predict(pp, valid_X)
+pos_class <- if ("1" %in% levels(train_y)) "1" else levels(train_y)[2]
+
+#train_X_norn and valid_X_norn are the scaled versions
+```
+Interpertation- firstly we divided the dataset in two parts training(60%) and validation(40%), later on personal loan(target variable) is being removed and the remaining dataset is normalized.
+
+
+#Q-2  Classify the given customer with k=1
+```{r}
+# applying tibble as it creates a tiny table with exactly one row (one person).
+
+new_cust <- tibble(
+  Age = 40, Experience = 10, Income = 84, Family = 2, CCAvg = 2,
+  Education = factor(2, levels = levels(train_bank_new_reports$Education)),
+  Mortgage = 0, Securities.Account = 0, CD.Account = 0, Online = 1, CreditCard = 1
+)
+
+# In this, new customer’s categorical variables (like Education) into numeric dummy columns so they match the training set format.
+new_customer_X  <- predict(edu_dummy, newdata = new_cust[, input_features, drop = FALSE]) %>% as.data.frame()
+new_customer_norn <- predict(pp,  new_customer_X)
+
+model_k1 <- knn3(x = train_X_norn, y = train_y, k = 1)   # build k-NN model (k=1)
+prob_k1  <- predict(model_k1, new_customer_norn)       # get probability for new customer
+pred_k1  <- ifelse(prob_k1[, pos_class] >= 0.5, "1", "0")  # classify: 1 if prob ≥ 0.5 else 0
+
+#finding the class and probability of customer
+cat(" New customer class with k=1:", pred_k1,
+    " | P(class=1) =", round(prob_k1[, pos_class], 4), "\n")
+
+```
+Interpretation- used k-NN with k = 1 to compute the probability for class “1” (loan accepted). The single nearest neighbor in the training set belongs to class 0, so P(class = 1) = 0.00. With the assignment rule (success class = “1”, cutoff = 0.5), the model classifies the customer as 0 (will not accept the loan),since customer belongs to class 0  it means that the customer will not accept the loan. 
+
+
+
+#Q-3 Find a “good k” by trying many k’s and picking highest validation accuracy
+```{r}
+set.seed(123)
+k_value <- seq(1, 31, by = 2)
+ary   <- numeric(length(k_value))
+
+for (i in seq_along(k_value)) {
+  k_now <- k_value[i]
+  knn_model  <- knn3(x = train_X_norn, y = train_y, k = k_now)
+  prob_valid <- predict(knn_model, valid_X_norn)
+  class_pred <- factor(ifelse(prob_valid[, pos_class] >= 0.5, "1", "0"), levels = c("0", "1"))
+  ary[i] <- mean(class_pred == valid_y)
+}
+
+acc_df   <- data.frame(k = k_value, accuracy = ary)
+best_acc <- max(acc_df$accuracy)
+best_k   <- max(acc_df$k[acc_df$accuracy == best_acc])
+cat(" Best k:", best_k, " | Validation accuracy =", round(best_acc, 4), "\n")
+
+
+
+```
+
+```{r}
+#plotting graph 
+ggplot(acc_df, aes(x = k, y = accuracy)) +
+  geom_line(color = "blue") +
+  geom_point(color = "red", size = 2) +
+  geom_vline(xintercept = best_k, linetype = "dashed", color = "darkgreen") +
+  annotate("text", x = best_k, y = best_acc,
+           label = paste0("Best k = ", best_k),
+           vjust = -0.5, color = "darkgreen") +
+  labs(title = "Validation Accuracy vs k (k-NN)",
+       x = "k (Number of Neighbors)",
+       y = "Validation Accuracy") +
+  theme_minimal()
+```
+
+
+Interpretation- finding the best optimal value of k by running it in a loop from 1 to 31 which returned the value of k = 1, it implies that the maximum accuracy is attained when the value of k is 1. 
+
+
+#Q-4 — Confusion matrix on validation using best k
+```{r}
+best_model <- knn3(x = train_X_norn, y = train_y, k = best_k)
+best_prob  <- predict(best_model, valid_X_norn)
+best_pred  <- factor(ifelse(best_prob[, pos_class] >= 0.5, "1", "0"), levels = c("0","1"))
+
+cm_valid <- confusionMatrix(best_pred, valid_y, positive = "1")
+cat(" Confusion Matrix (Validation, best k):\n"); print(cm_valid)
+
+```
+Interpretation- Building best-k model, predict on validation set, and use confusion matrix to evaluate accuracy, sensitivity, specificity.
+
+#Q-5 Classify the same customer using best k
+```{r}
+best_prob_new <- predict(best_model, new_customer_norn)
+best_pred_new <- ifelse(best_prob_new[, pos_class] >= 0.5, "1", "0")
+cat(" New customer class with best k (k =", best_k, "):", best_pred_new,
+    " | P(class=1) =", round(best_prob_new[, pos_class], 4), "\n")
+
+```
+Interpretation- Classifying the new customer again, this time using the best k and it  returned 0 which means the new customer didnot accept the loan.
+
+#Q-6 Repartition into Train/Valid/Test = 50% / 30% / 20% and compare
+```{r}
+set.seed(456)
+
+# dividing dataset into testing (20%)
+idx_test <- createDataPartition(bank_new_reports$Personal.Loan, p = 0.20, list = FALSE)
+test_raw <- bank_new_reports[idx_test, ]
+remain   <- bank_new_reports[-idx_test, ]  # 80% remains
+
+# partitioning the remaining data into training(50%) and validation(30%)
+idx_train2 <- createDataPartition(remain$Personal.Loan, p = 0.625, list = FALSE) # 0.625 = 50/80
+train2_raw <- remain[idx_train2, ]   # ~50%
+valid2_raw <- remain[-idx_train2, ]  # ~30%
+
+# Dummies on TRAIN2 ONLY (predictors only)
+predictor_names2 <- setdiff(names(train2_raw), "Personal.Loan")
+edu_dummy2 <- dummyVars(~ ., data = train2_raw[, predictor_names2, drop = FALSE], fullRank = FALSE)
+
+train2_X <- predict(edu_dummy2, train2_raw[, predictor_names2, drop = FALSE]) %>% as.data.frame()
+valid2_X <- predict(edu_dummy2, valid2_raw[, predictor_names2, drop = FALSE]) %>% as.data.frame()
+test2_X  <- predict(edu_dummy2, test_raw[,  predictor_names2, drop = FALSE]) %>% as.data.frame()
+
+train2_y <- train2_raw$Personal.Loan
+valid2_y <- valid2_raw$Personal.Loan
+test2_y  <- test_raw$Personal.Loan
+
+# Scale using TRAIN2 only
+pp2 <- preProcess(train2_X, method = c("center", "scale"))
+train2_Xs <- predict(pp2, train2_X)
+valid2_Xs <- predict(pp2, valid2_X)
+test2_Xs  <- predict(pp2, test2_X)
+
+# Predict with previously chosen best_k
+model2 <- knn3(x = train2_Xs, y = train2_y, k = best_k)
+
+pred_train2 <- factor(ifelse(predict(model2, train2_Xs)[, "1"] >= 0.5, "1", "0"), levels = c("0","1"))
+pred_valid2 <- factor(ifelse(predict(model2, valid2_Xs)[, "1"] >= 0.5, "1", "0"), levels = c("0","1"))
+pred_test2  <- factor(ifelse(predict(model2,  test2_Xs)[,  "1"] >= 0.5, "1", "0"), levels = c("0","1"))
+
+cm_train2 <- confusionMatrix(pred_train2, train2_y, positive = "1")
+cm_valid2 <- confusionMatrix(pred_valid2, valid2_y, positive = "1")
+cm_test2  <- confusionMatrix(pred_test2,  test2_y,  positive = "1")
+
+cat(" Confusion Matrix — TRAIN (50%):\n");      print(cm_train2)
+cat(" Confusion Matrix — VALIDATION (30%):\n"); print(cm_valid2)
+cat(" Confusion Matrix — TEST (20%):\n");       print(cm_test2)
+
+```
+Interpretation-
+
+Training data :
+The training matrix shows perfect classification: all 2,260 “No Loan” customers and all 240 “Loan” customers were correctly classified.
+Accuracy, Sensitivity, and Specificity are all 100%, which indicates the model fits the training data extremely well.
+However, such perfection often suggests the possibility of overfitting, since the model may have memorized the training set.
+
+
+Validation data:
+Accuracy is 95.4%, slightly lower than training but still strong.
+Sensitivity = 72.9%: the model correctly identifies about 73% of actual loan acceptors, meaning it misses around 27% of positives.
+Specificity = 97.8%: the model is excellent at recognizing customers who won’t accept the loan.
+Balanced Accuracy (85.3%) confirms the model does better on negatives than positives.
+This demonstrates that while the model generalizes reasonably, it is biased towards predicting “No Loan”, which is expected given the class imbalance (only ~9.6% positives).
+
+
+Test data:
+Accuracy remains high at 96%, consistent with the validation set.
+Sensitivity = 71.9%: very similar to validation, showing stable performance in detecting loan acceptors.
+Specificity = 98.6%: again very strong, meaning almost all non-loan customers are predicted correctly.
+Positive Predictive Value (84.1%) is better here, showing that when the model predicts “Loan,” it is more likely to be correct compared to validation.
+Balanced Accuracy (85.2%) mirrors the validation results, reinforcing that the model is robust and not overly tuned to a single dataset.
+
