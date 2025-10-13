@@ -1,0 +1,276 @@
+---
+title: "Assignment_fml_3"
+author: "Chhavi Bishnoi"
+date: "2025-10-12"
+output: html_document
+---
+
+
+Setup & data prep (robust to column-name variations)
+```{r}
+# install.packages(c("tidyverse","reshape2","e1071"))  # install only once if not already done
+library(tidyverse)   # for data wrangling and importing CSV files
+library(reshape2)    # for melting and reshaping data
+library(e1071)       # for applying Naive Bayes model
+
+#  Load CSV 
+bank_raw <- read_csv("C:/Users/chhav/Downloads/UniversalBank (1).csv")
+
+
+# Normalize header names (convert spaces -> dots) 
+names(bank_raw) <- gsub(" ", ".", names(bank_raw), fixed = TRUE)  # cleaning column names for consistency
+
+# Standardize to Online, CC, Loan no matter the original labels
+bank <- bank_raw %>%
+  rename(
+    Online = any_of(c("Online","online","ONLINE")),                 # standardizing Online column
+    CC     = any_of(c("CreditCard","Credit.Card","CC","creditcard","CREDITCARD")),  # standardizing Credit Card column
+    Loan   = any_of(c("Personal.Loan","PersonalLoan","Loan","personal.loan"))        # standardizing Loan column
+  )
+
+# Keep only the three variables required by the assignment 
+req <- c("Online","CC","Loan")  # selecting important variables
+missing <- setdiff(req, names(bank))  # checking if any required variable is missing
+if (length(missing) > 0) {
+  stop("Missing required columns after renaming: ", paste(missing, collapse = ", "))  # stops execution if a column is missing
+}
+bank <- bank %>% select(all_of(req))  # keeping only needed columns
+
+# Coerce to clean 0/1 integers (handles TRUE/FALSE, yes/no, etc.) 
+to01 <- function(x) {
+  if (is.logical(x)) return(as.integer(x))  # convert TRUE/FALSE to 1/0
+  if (is.numeric(x)) {
+    if (all(is.na(x) | x %in% c(0,1))) return(as.integer(x))  # keep if already 0/1
+    return(as.integer(x != 0))  # convert all non-zero values to 1
+  }
+  x_chr <- tolower(trimws(as.character(x)))  # converting text to lowercase and trimming spaces
+  ones  <- c("1","yes","y","true","t")       # defining values treated as 1
+  zeros <- c("0","no","n","false","f")       # defining values treated as 0
+  out <- rep(NA_integer_, length(x_chr))     
+  out[x_chr %in% ones]  <- 1L                # assign 1 to positive responses
+  out[x_chr %in% zeros] <- 0L                # assign 0 to negative responses
+  if (any(is.na(out))) {                     # stop if any value can't be converted
+    bad <- unique(x_chr[is.na(out)])
+    stop("Cannot coerce to 0/1; unexpected values: ", paste(bad, collapse = ", "))
+  }
+  out
+}
+
+bank <- bank %>% mutate(
+  Online = to01(Online),  # convert Online variable to binary
+  CC     = to01(CC),      # convert Credit Card variable to binary
+  Loan   = to01(Loan)     # convert Loan variable to binary
+)
+
+stopifnot(all(bank$Online %in% c(0,1)),  # ensures Online contains only 0 and 1
+          all(bank$CC     %in% c(0,1)),  # ensures CC contains only 0 and 1
+          all(bank$Loan   %in% c(0,1)))  # ensures Loan contains only 0 and 1
+
+#  Train/validation split: 60% / 40% (use training only for A–G as required) 
+set.seed(64060)   # ensures reproducibility of random split
+n_all   <- nrow(bank)  # total number of rows
+n_tr    <- floor(0.60 * n_all)  # 60% of rows for training
+idx_tr  <- sample.int(n_all, n_tr)  # selecting random rows for training
+data_tr <- bank[idx_tr, ]  # creating training dataset
+data_va <- bank[-idx_tr, ] # creating validation dataset
+
+cat("Split -> total:", n_all, " | train:", nrow(data_tr), " | valid:", nrow(data_va), "\n\n")  # prints dataset split summary
+
+
+#Interpretation:
+# The code prepares and cleans the Universal Bank dataset for analysis. It starts by loading essential packages for data handling, reshaping, and modeling. The dataset is then imported and cleaned by standardizing column names and selecting only three key variables — Online, Credit Card, and Loan. These variables are converted into consistent binary (0/1) format to ensure accuracy during further analysis. Validation checks confirm the data is properly formatted. Finally, the dataset is split into two parts — 60% for training and 40% for validation — ensuring a reproducible and organized setup for building and testing models.  
+
+
+```
+
+(A) Pivot: Online as columns, CC as rows, Loan as secondary row (counts)
+```{r}
+# 3D contingency: CC x Loan x Online
+tab_A_3d <- with(data_tr, table(CC = CC, Loan = Loan, Online = Online))
+cat("A) 3D table (CC x Loan x Online)\n"); print(tab_A_3d); cat("\n")
+
+# Readable 2D pivot via melt() + dcast(): rows = (CC, Loan), columns = Online
+m_A <- melt(data_tr, id.vars = c("CC","Loan"), measure.vars = "Online")
+A_counts <- m_A %>%
+  group_by(CC, Loan, Online = value) %>%
+  summarise(n = n(), .groups = "drop")
+
+pivot_A <- dcast(A_counts, CC + Loan ~ Online, value.var = "n", fill = 0)
+names(pivot_A)[names(pivot_A)=="0"] <- "Online_0"
+names(pivot_A)[names(pivot_A)=="1"] <- "Online_1"
+
+cat("A) Pivot (rows = CC,Loan; cols = Online)\n"); print(pivot_A); cat("\n")
+
+#Interpretation:
+# This block summarizes how credit-card status (CC), loan status (Loan), and online banking (Online) intersect in the training data. First, a 3-D contingency table counts every combination of CC × Loan × Online, giving the full multiway breakdown. Then the data is reshaped into a simple, readable pivot: each row represents a (CC, Loan) segment, and the two columns show how many in that segment have Online = 0 vs Online = 1. Renaming the columns to Online_0 and Online_1 makes the comparison straightforward, so it’s easy to see which CC/Loan groups are more likely to use online banking.
+
+```
+
+
+
+(B) Probability from the pivot: 𝑃(Loan=1, CC=1, online=1)
+```{r}
+# counting customers who have Loan=1, CC=1, and Online=1
+num_L1_CC1_O1 <- tab_A_3d["1","1","1"]
+
+# counting all customers who have CC=1 and Online=1 (regardless of Loan)
+den_CC1_O1    <- sum(tab_A_3d["1", , "1"])
+
+# calculating P(Loan=1 | CC=1, Online=1)
+p_table_B     <- ifelse(den_CC1_O1 > 0, num_L1_CC1_O1 / den_CC1_O1, NA_real_)
+
+# displaying the calculated conditional probability
+cat("B) Empirical P(Loan=1 | CC=1, Online=1) =", round(p_table_B, 6), "\n\n")
+
+
+#Interpretation:
+# This section calculates the conditional probability that a customer has taken a personal loan, given that the customer owns a credit card and uses online banking.
+# It first extracts the count of customers who satisfy all three conditions—Loan = 1, CC = 1, and Online = 1—from the 3D contingency table. Then it computes the denominator by summing all cases where customers have a credit card (CC = 1) and use online banking (Online = 1), regardless of loan status. The ratio of these two counts gives the empirical conditional probability P(Loan = 1 | CC = 1, Online = 1).
+
+# The final printed output displays this probability rounded to six decimal places, helping to understand how likely a credit card holder who uses online banking is to also have a personal loan.
+```
+
+(C) Two pivots: Loan (rows) by Online (columns), and Loan (rows) by CC (columns)
+```{r}
+# creating contingency tables for Loan by Online and Loan by CC
+tab_C_online <- with(data_tr, table(Loan = Loan, Online = Online))
+tab_C_cc     <- with(data_tr, table(Loan = Loan, CC = CC))
+
+# printing the two tables for comparison
+cat("C1) Loan ~ Online\n"); print(tab_C_online); cat("\n")
+cat("C2) Loan ~ CC\n");     print(tab_C_cc);     cat("\n")
+
+#Interpretation
+#This code builds two separate contingency tables to explore how personal loan status relates to online banking usage and credit card ownership. The first table (tab_C_online) cross-tabulates Loan and Online, showing how many customers with and without loans also use or do not use online banking. The second table (tab_C_cc) cross-tabulates Loan and CC, displaying how loan approval is distributed among customers with and without credit cards.
+#Both tables help highlight potential relationships — for example, whether customers who bank online or own credit cards are more likely to take personal loans. The printed outputs make it easy to visually compare counts across these categories.
+
+```
+
+
+(D) Required probabilities
+```{r}
+Ntr       <- nrow(data_tr)  # number of training records
+loan_freq <- with(data_tr, table(Loan))  # counting how many have Loan=0 or Loan=1
+
+# calculating conditional and overall probabilities
+p_CC1_L1 <- ifelse(loan_freq["1"] > 0, tab_C_cc["1","1"] / loan_freq["1"], NA_real_)  # P(CC=1 | Loan=1)
+p_O1_L1  <- ifelse(loan_freq["1"] > 0, tab_C_online["1","1"] / loan_freq["1"], NA_real_)  # P(Online=1 | Loan=1)
+p_L1 <- as.numeric(loan_freq["1"]) / Ntr  # P(Loan=1)
+p_CC1_L0 <- ifelse(loan_freq["0"] > 0, tab_C_cc["0","1"] / loan_freq["0"], NA_real_)  # P(CC=1 | Loan=0)
+p_O1_L0  <- ifelse(loan_freq["0"] > 0, tab_C_online["0","1"] / loan_freq["0"], NA_real_)  # P(Online=1 | Loan=0)
+p_L0 <- as.numeric(loan_freq["0"]) / Ntr  # P(Loan=0)
+
+cat("D) Required probabilities:\n")  # printing results
+print(c(
+  `P(CC=1 | Loan=1)`     = round(p_CC1_L1, 6),
+  `P(Online=1 | Loan=1)` = round(p_O1_L1, 6),
+  `P(Loan=1)`            = round(p_L1, 6),
+  `P(CC=1 | Loan=0)`     = round(p_CC1_L0, 6),
+  `P(Online=1 | Loan=0)` = round(p_O1_L0, 6),
+  `P(Loan=0)`            = round(p_L0, 6)
+)); cat("\n")
+
+#This section calculates several conditional and marginal probabilities that describe how loan approval relates to credit card ownership and online banking usage in the training data.
+
+# It first counts the total number of records and the frequency of loan statuses (Loan = 1 and Loan = 0). Using these counts, it computes:
+
+# P(CC = 1 | Loan = 1): the probability that a customer owns a credit card given that they have a loan.
+
+# P(Online = 1 | Loan = 1): the probability that a customer uses online banking given that they have a loan.
+
+# P(Loan = 1): the overall probability of having a loan.
+
+# P(CC = 1 | Loan = 0): the probability that a customer owns a credit card given that they do not have a loan.
+
+# P(Online = 1 | Loan = 0): the probability that a customer uses online banking given that they do not have a loan.
+
+# P(Loan = 0): the overall probability of not having a loan.
+
+# The final output prints these values in a rounded format, offering a clear summary of how likely customers with or without loans are to own credit cards or use online banking. These probabilities provide insights into customer behavior and relationships among the key financial variables.
+
+```
+(E) Naive Bayes posterior P (loan=1, cc=1, online=1)
+```{r}
+# Naive Bayes independence assumption calculations
+num1   <- p_CC1_L1 * p_O1_L1 * p_L1  # numerator for Loan=1
+num0   <- p_CC1_L0 * p_O1_L0 * p_L0  # numerator for Loan=0
+p_nb_E <- num1 / (num1 + num0)       # posterior probability using Bayes’ rule
+
+cat("E) Naive Bayes posterior P(Loan=1 | CC=1, Online=1) =", round(p_nb_E, 6), "\n\n")  # showing NB probability
+
+
+#Interpretation
+
+#This part applies the Naive Bayes independence assumption to estimate the probability that a customer has a personal loan given they own a credit card and use online banking. Using previously calculated probabilities, it multiplies conditional and prior probabilities for both possible loan outcomes:
+#The first numerator (num1) combines the probabilities of owning a credit card and using online banking given a loan, along with the overall probability of having a loan.
+
+#The second numerator (num0) does the same for customers without a loan.
+
+#These two values represent the likelihood of the observed features under each loan condition. The final posterior probability is then computed as the ratio of the “loan = 1” numerator to the total of both numerators. The printed result shows P(Loan = 1 | CC = 1, Online = 1) based on the Naive Bayes model, offering a probabilistic estimate of how likely such a customer is to have a loan.
+
+```
+
+
+(F) Compare empirical (B) vs Naive Bayes (E)
+```{r}
+# comparing empirical result and Naive Bayes result
+cmp <- c(
+  Empirical_from_Pivot_B = p_table_B,            # from pivot table
+  Naive_Bayes_from_E     = p_nb_E,               # from NB formula
+  Difference_NB_minus_Pivot = p_nb_E - p_table_B # difference between both
+)
+cat("F) Comparison (NB minus Pivot shown too):\n"); print(round(cmp, 6)); cat("\n")  # printing comparison
+
+# Guidance for your write-up:
+# - Pivot value is the exact conditional frequency in TRAINING data for (CC=1, Online=1).
+# - NB is model-based and may differ if CC and Online aren’t conditionally independent within Loan classes.
+
+#Interpretation:
+
+#This section compares two probability estimates for the same event — the chance that a customer has a loan given they own a credit card and use online banking. The first value comes from the empirical pivot table, which directly measures the conditional frequency from the training data. The second is obtained from the Naive Bayes model, which estimates the probability based on the assumption that credit card ownership and online usage are independent within each loan group. The code also calculates their difference to highlight how much the model-based prediction deviates from the actual data.
+
+#The printed comparison helps determine whether the Naive Bayes independence assumption holds true in this dataset. A small difference indicates that the assumption reasonably fits the observed data, while a larger gap suggests dependency between the features.
+
+```
+
+
+
+(G) Needed entries + Train Naive Bayes and compare model posterior
+```{r}
+cat("G) Needed entries for NB:\n",
+    "  P(CC=1|Loan=1), P(Online=1|Loan=1), P(Loan=1),\n",
+    "  P(CC=1|Loan=0), P(Online=1|Loan=0), P(Loan=0)\n\n", sep="")
+
+# Train NB using ONLY CC and Online on the training set
+nb_fit <- naiveBayes(
+  x = data_tr %>% transmute(CC = factor(CC), Online = factor(Online)),
+  y = factor(data_tr$Loan),
+  laplace = 1  # smoothing avoids zeros
+)
+
+# Model posterior for a customer with CC=1 and Online=1
+new_11 <- data.frame(CC = factor(1, levels = c(0,1)),
+                     Online = factor(1, levels = c(0,1)))
+post_G <- predict(nb_fit, newdata = new_11, type = "raw")
+p_nb_model <- as.numeric(post_G[,"1"])
+
+cat("G) Naive Bayes model posterior for (CC=1, Online=1):\n")
+print(post_G); cat("\n")
+
+cat("Compare model vs manual NB (E):\n")
+print(round(c(
+  NB_model_posterior   = p_nb_model,
+  Manual_NB_from_E     = p_nb_E,
+  Diff_Model_minus_Manual = p_nb_model - p_nb_E
+), 6)); cat("\n")
+
+#Interpretation:
+
+#This part builds and validates a Naive Bayes (NB) classification model using only two predictors — credit card ownership (CC) and online banking usage (Online) — to estimate the likelihood of a customer having a personal loan.
+
+#It begins by displaying the six probabilities needed for the manual Naive Bayes calculation: conditional probabilities of CC and Online given each loan status, and the overall probabilities of having or not having a loan. The naiveBayes() function is then used to train the model on the training dataset, with Laplace smoothing applied to prevent division-by-zero issues when any category has zero frequency.
+
+# After training, a new observation representing a customer with CC = 1 and Online = 1 is created to predict the posterior probabilities. The resulting output (post_G) shows how likely such a customer is to belong to each loan class. Finally, the model-based posterior probability is compared with the manually calculated Naive Bayes probability from the earlier step. This comparison checks for consistency between the hand-derived result and the model’s internal computation, helping verify that both approaches produce matching or closely aligned outcomes.
+
+```
+
