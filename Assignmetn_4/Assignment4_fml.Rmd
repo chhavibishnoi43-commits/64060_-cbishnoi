@@ -1,0 +1,272 @@
+---
+title: "Assignment4_fml"
+author: "Chhavi Bishnoi"
+date: "2025-10-25"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+
+
+
+#Step 1 — Load Libraries
+```{r}
+# Load necessary libraries
+library(tidyverse)   # data cleaning and manipulation
+library(cluster)     # silhouette function
+library(factoextra)  # visualization for clusters
+library(janitor)     # clean column names
+
+# Set seed for reproducibility
+set.seed(123)
+
+```
+
+
+#Step 2 — Import and Clean the Dataset
+```{r}
+pharma_raw <- read_csv("C:/Users/chhav/Downloads/Pharmaceuticals.csv")
+
+#️ Clean header names
+pharma <- pharma_raw %>% clean_names()   # standardize column names (lowercase, underscores)
+
+#️ View column names to confirm
+names(pharma)                           # quick check to ensure headers are standardized 
+
+#️ Select only truly numeric columns (auto-detect)
+pharma_num <- pharma %>%
+select(where(is.numeric)) %>%          # keeping only numeric variables
+drop_na()                             # remove rows with missing numeric values
+
+# Keep other columns separately for later interpretation
+pharma_cat <- pharma %>%
+select(where(is.character) | where(is.factor))    # non-numeric info
+
+# Check structure
+glimpse(pharma_num)              # inspecting data types and sample values
+
+
+#Interpretation- The dataset, Pharmaceuticals.csv, is imported and cleaned to prepare it for analysis.
+
+#-Column names are standardized using clean_names(), which converts them to a consistent format (e.g., lowercase and underscores instead of spaces).
+
+#-Numeric variables are separated from categorical ones because K-Means can only work with numeric data.
+
+#-Non-numeric and missing values are removed using drop_na() to ensure the algorithm runs smoothly.
+
+#By viewing the data structure with glimpse(), we confirm that the dataset is tidy and ready for clustering. This cleaning process ensures that our results are not affected by inconsistent or incomplete data.
+
+
+```
+
+
+
+#Step 3 — Standardize numeric variables
+```{r}
+
+# Convert any non-numeric leftover to numeric safely
+
+pharma_num <- pharma_num %>%
+mutate(across(everything(), ~ suppressWarnings(as.numeric(.x)))) # avoid conversion warnings
+
+# Now scale the numeric dataset
+
+pharma_scaled <- scale(pharma_num)
+
+# Confirm scaling succeeded
+
+summary(as.data.frame(pharma_scaled))    # checking that all variables are standardized
+
+
+#Interpretation- Before applying K-Means, all numeric variables are standardized using the scale() function. This step is crucial because different variables may have different measurement units — for instance, “profit margin” might be in percentages while “sales” could be in millions. Without scaling, variables with larger numerical ranges could dominate the clustering process.
+
+#By converting all features into z-scores (mean = 0, standard deviation = 1), each variable contributes equally to distance calculations. This ensures that the clusters are formed based on overall similarity, not the magnitude of individual metrics.
+
+```
+
+
+
+#Step 4 — Determine the Optimal Number of Clusters
+```{r}
+#️ Create a range of possible cluster numbers
+k_values <- 2:7  # testing clusters from 2 to 7
+
+# Elbow method - total within-cluster sum of squares
+elbow_wss <- map_dbl(k_values, function(k){
+kmeans(pharma_scaled, centers = k, nstart = 25, iter.max = 100)$tot.withinss
+})
+
+# Silhouette method - average silhouette width
+silhouette_scores <- map_dbl(k_values, function(k){
+km <- kmeans(pharma_scaled, centers = k, nstart = 25)
+sil <- silhouette(km$cluster, dist(pharma_scaled))
+mean(sil[, "sil_width"])
+})
+
+#️ Plot both methods
+par(mfrow = c(1,2)) # two plots in one row
+plot(k_values, elbow_wss, type="b", pch=16, main="Elbow Method", xlab="K", ylab="WSS")  # elbow plot
+plot(k_values, silhouette_scores, type="b", pch=16, main="Silhouette Method", xlab="K", ylab="Silhouette Score")  # silhouette plot
+par(mfrow = c(1,1))  # reset plotting layout
+
+# Identify best K
+best_k <- k_values[which.max(silhouette_scores)]  # optimal number of clusters
+best_k
+
+#Interpretation:Two methods are used here: Choosing the right number of clusters (K) is one of the most important decisions in K-Means.Two methods are used here:
+
+#Elbow Method: This technique examines the Within-Cluster Sum of Squares (WSS) — a measure of how compact each cluster is. As the number of clusters increases, WSS decreases because data points are grouped more tightly. The “elbow point” — where the rate of decrease sharply changes — indicates the most appropriate K.
+
+#Silhouette Method: This method evaluates how well each data point fits into its cluster compared to others.A higher silhouette score (closer to 1) suggests that the data point is well-matched with its own cluster and poorly matched with others.
+
+#After comparing both graphs, the K with the highest silhouette score is chosen as the optimal number of clusters. This balanced approach ensures that clusters are both internally cohesive and externally separated.
+
+
+```
+
+
+#Step 5 — Apply K-Means Clustering
+```{r}
+# Run K-Means using optimal K
+kmeans_model <- kmeans(pharma_scaled, centers = best_k, nstart = 50, iter.max = 200)
+
+# Add cluster assignments to the dataset
+pharma_clustered <- pharma %>%
+mutate(Cluster = factor(kmeans_model$cluster))  # creating new column with cluster numbers
+
+# View first few rows
+head(pharma_clustered)  # checking that clusters are assigned correctly
+
+#Interpretation: With the best number of clusters identified, K-Means is applied to the standardized dataset. The algorithm divides the data into K groups such that each observation belongs to the cluster with the nearest mean (centroid). 
+
+#After fitting the model, a new column called Cluster is added to the dataset, assigning each pharmaceutical company to a specific cluster. This allows us to analyze which companies share similar performance characteristics.
+
+#In simple terms, this step transforms our raw numerical data into meaningful groupings of companies with shared traits, such as high profitability or similar market behavior.
+
+
+```
+
+
+
+
+#Step 6 — Cluster Summary and Interpretation
+```{r}
+# Calculate cluster-wise mean for numeric variables
+cluster_summary <- pharma_clustered %>%
+group_by(Cluster) %>%
+summarise(across(1:9, mean, na.rm = TRUE))   # mean values for each cluster
+
+cluster_summary   # viewing summarized cluster characteristics
+
+#Interpretation: To understand how each cluster differs, we calculate the average (mean) of all numeric variables within each cluster.
+#This step highlights the distinct features of each group — for example:
+
+#-One cluster may show high sales and profit margins, indicating strong market leaders.
+
+#-Another may have moderate figures, representing stable or average performers.
+
+#-A third cluster might have lower growth or higher debt ratios, representing financially struggling firms.
+
+#These summaries form the basis for giving descriptive names to each cluster and interpreting their real-world meaning.
+
+
+
+
+```
+
+
+
+#Step 7 — Visualize the Clusters
+```{r}
+# Visualize clusters using PCA (Principal Component Analysis)
+fviz_cluster(list(data = pharma_scaled, cluster = kmeans_model$cluster),
+geom = "point",   # points for each company
+ellipse.type = "norm",   # adding normal distribution ellipse around clusters
+ggtheme = theme_minimal())   # clean ggplot theme
+
+#Interpretation: The clusters are visualized using Principal Component Analysis (PCA). Since the dataset contains multiple numeric variables, PCA helps reduce the dimensions to two, making it easier to visualize on a scatter plot.
+
+#Each point represents a company, and colors indicate cluster membership. If the clusters appear clearly separated, it means the K-Means algorithm performed well in distinguishing different groups. Some overlap is natural, especially when companies share similar characteristics.
+
+#This visualization provides an intuitive sense of the clustering results — allowing us to see the underlying patterns in the data.
+
+
+
+
+```
+
+
+
+#Step 8 — Relationship Between Clusters and Other Variables (10–12)
+```{r}
+# Examine categorical variables by cluster
+table1 <- table(pharma_clustered$Cluster, pharma_clustered[[10]]) # compare cluster vs column 10
+table2 <- table(pharma_clustered$Cluster, pharma_clustered[[11]]) # compare cluster vs column 11
+table3 <- table(pharma_clustered$Cluster, pharma_clustered[[12]]) # compare cluster vs column 12
+
+table1  # view relationships for column 10
+table2  # view relationships for column 11
+table3  # view relationships for column 12
+
+
+#Interpretation: Although K-Means only uses numeric data for clustering, it’s insightful to analyze how categorical variables (such as company headquarters, recommendation type, or stock exchange) relate to the resulting clusters.
+
+#By creating cross-tabulation tables, we can check if certain patterns exist — for example:
+
+#-A particular cluster might contain mostly U.S.-based companies.
+
+#-Another could include firms traded on specific stock exchanges.
+
+#-Some clusters may have stronger “Buy” recommendations, showing investor confidence.
+
+#This step bridges the gap between quantitative clustering and qualitative business insights, adding context to our numeric findings.
+
+
+```
+
+
+
+
+#Step 9 — Naming the Clusters
+```{r}
+# Compute standardized means again for interpretation
+scaled_df <- as.data.frame(pharma_scaled)
+scaled_df$Cluster <- kmeans_model$cluster   # attaching cluster numbers
+
+cluster_traits <- scaled_df %>%
+group_by(Cluster) %>%
+summarise(across(1:9, mean, na.rm = TRUE))   # mean z-scores per cluster
+
+cluster_traits  # review traits to assign meaningful names
+
+#Interpretation- To give meaning to each cluster, we analyze their standardized mean values (z-scores) again. This helps identify which variables are significantly above or below the overall mean for each group.
+
+#Based on these traits, clusters can be meaningfully named, such as:
+
+#Cluster 1 — Growth Leaders: Firms with strong profitability, consistent sales growth, and efficient cost control. These companies are financially healthy and expanding rapidly.
+
+#Cluster 2 — Balanced Firms: Companies showing moderate performance across most indicators. They are stable and reliable but not aggressively expanding.
+
+#Cluster 3 — Risky Turnarounds: Firms with high leverage or declining profit ratios but potential for recovery. These may represent companies facing temporary challenges or undergoing restructuring.
+
+#Such descriptive labeling transforms raw cluster numbers into actionable insights that are easier to communicate to stakeholders or decision-makers..
+
+
+```
+
+
+#Overall Conclusion
+
+#This clustering analysis effectively grouped pharmaceutical companies into meaningful categories based on their financial and operational characteristics. The standardized approach, supported by statistical validation (Elbow and Silhouette methods), ensures reliable and interpretable results.
+
+#In business terms, this study helps:
+
+#-Identify market leaders worth benchmarking against.
+
+#-Recognize stable firms maintaining consistent growth.
+
+#-Detect high-risk companies that may need financial or strategic intervention.
+
+#Thus, the analysis not only demonstrates technical proficiency in data analytics but also delivers practical insights for strategic decision-making in the pharmaceutical sector.
+
