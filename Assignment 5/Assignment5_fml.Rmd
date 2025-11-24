@@ -1,0 +1,163 @@
+---
+title: "Assignment5_FML"
+author: "Chhavi Bishnoi"
+date: "2025-11-23"
+output: html_document
+---
+
+
+#Step1- Loading dataset and removing missing values
+```{r}
+
+library(readr)
+
+cereals_raw <-   read_csv("C:/Users/chhav/Downloads/Cereals.csv") #read from uploaded path
+
+#Removing cereals with missing values
+cereals_cleaned <- na.omit(cereals_raw)   #removing NAs
+
+#Keeping only numeric columns for clustering
+cereals_numeric <- cereals_cleaned[sapply(cereals_cleaned, is.numeric)]   #numeric-only
+
+
+#interpretation- The dataset is loaded and examined for missing values. Any cereal entries containing incomplete nutritional information are removed using the na.omit() function. This ensures that all remaining cereals have full and consistent data for every numeric variable. Cleaning the dataset in this way is important because missing values interfere with distance calculations and can lead to unreliable clustering results. 
+#After cleaning, only numerical features—such as calories, protein, fat, sodium, fiber, and sugars—are retained for further analysis since hierarchical clustering can only be applied to numeric variables.
+```
+
+#Step2- Should the Data Be Normalized?
+```{r}
+#Normalization (z-scores)
+cereals_standardized <- scale(cereals_numeric)   #normalization
+
+#Euclidean distance matrix
+euclid_dist <- dist(cereals_standardized, method = "euclidean")   #distance metric
+
+summary(cereals_standardized)
+
+
+#Interpretation- All numeric variables are standardized using z-score normalization through the scale() function. This step equalizes the contribution of each nutritional attribute by converting them to a common scale where each variable has a mean of zero and a standard deviation of one.
+
+#Normalization is essential because the original variables vary widely in units and magnitude, such as calories measured in tens while sugars are measured in grams. Without normalization, variables with larger ranges would dominate the clustering process. After scaling, Euclidean distance is computed between cereal observations, serving as the foundation for hierarchical clustering.
+```
+
+
+#Step3-Apply AGNES Using Multiple Linkage Methods
+```{r}
+
+
+
+library(cluster)
+
+agnes_singlelink   <- agnes(euclid_dist, method = "single")     #single linkage
+agnes_completelink <- agnes(euclid_dist, method = "complete")   #complete linkage
+agnes_averagelink  <- agnes(euclid_dist, method = "average")    #average linkage
+agnes_wardlink     <- agnes(euclid_dist, method = "ward")       #ward's method
+
+#Compare agglomerative coefficients
+aggr_coeffs <- c(
+  single   = agnes_singlelink$ac,
+  complete = agnes_completelink$ac,
+  average  = agnes_averagelink$ac,
+  ward     = agnes_wardlink$ac
+)
+
+aggr_coeffs    #shows which linkage gives the tightest clustering
+
+
+#Interpretation- With standardized distances ready, hierarchical clustering is performed using the AGNES algorithm under four different linkage methods: single, complete, average, and Ward. Each method creates clusters in a different way—for example, single linkage forms clusters based on the nearest points, while complete linkage uses the farthest.Ward’s method focuses on minimizing variance within clusters. The agglomerative coefficient from each model is compared to evaluate overall clustering strength.
+
+#Ward’s method typically produces the highest coefficient, indicating compact and well-separated clusters. Based on this comparison, Ward is selected as the most appropriate method for this dataset.
+```
+
+#Step4- How Many Clusters Should We Choose?
+```{r}
+#Dendrogram - plot the chosen method (Ward recommended)
+plot(agnes_wardlink, which.plots = 2, main = "Dendrogram - Ward Linkage")
+
+# Selecting number of clusters (cut dendrogram)
+final_clusters <- cutree(agnes_wardlink, k = 4)   #choosing k after visual inspection
+table(final_clusters)
+
+#Interpretation- A dendrogram is produced using Ward’s method to help determine a suitable number of clusters. By examining where the largest vertical jumps occur in the tree, four clusters appear to offer the clearest separation of cereal groups. The dendrogram naturally highlights this structure, showing points where merging clusters would combine cereals with noticeably different nutritional characteristics. 
+
+#Therefore, the analysis selects four clusters as the most meaningful and interpretable grouping of cereals.
+
+```
+
+
+#Step5-  Cluster stability: partition into A & B and test consistency
+```{r}
+
+set.seed(123)
+total_n <- nrow(cereals_standardized)
+
+idx_A <- sample(1:total_n, size = floor(0.5 * total_n))  #50% sample
+idx_B <- setdiff(1:total_n, idx_A)
+
+partA <- cereals_standardized[idx_A, ]
+partB <- cereals_standardized[idx_B, ]
+
+#Cluster A only (Ward)
+agnes_partA <- agnes(dist(partA), method = "ward")
+clusters_partA <- cutree(agnes_partA, k = 4)   #number of clusters in A
+
+#Computing centroids of clusters in A
+centroids_partA <- aggregate(partA, by = list(cluster = clusters_partA), FUN = mean) #centroids df
+
+#Removing the cluster label column to keep only numeric centroid rows
+centroids_matrix <- as.matrix(centroids_partA[ , -1])
+
+#Assigning each record in B to the nearest centroid from A
+assigned_B_to_A <- apply(partB, 1, function(obs){
+  dists_to_centroids <- apply(centroids_matrix, 1, function(center) sqrt(sum((obs - center)^2)))
+  which.min(dists_to_centroids)
+})
+
+#Comparing these assignments to the full-data cluster assignments for the same B rows
+full_assignments_for_B <- final_clusters[idx_B]
+
+table(assigned_B_to_A, full_assignments_for_B)   #stability comparison table
+
+
+#Interpretation- To evaluate the stability of the clustering results, the dataset is randomly divided into two equal partitions: Partition A and Partition B. Partition A is clustered independently, and the cluster centroids from this set are calculated. Each cereal in Partition B is then assigned to the nearest centroid from Partition A, and these assignments are compared to the cluster labels derived from the full dataset. A strong match between the two sets of labels indicates that the clusters are consistent and stable across different samples of the data. This stability shows that the clustering solution is reliable and not overly sensitive to how the data is split.
+
+```
+
+
+#Step6- Identify "healthy cereal" cluster using cluster summaries
+```{r}
+
+# Aggregating numeric variables by cluster to examine average nutritional profiles
+cluster_profiles <- aggregate(cereals_numeric, by = list(cluster = final_clusters), FUN = mean)
+
+cluster_profiles   #inspecting which cluster has low calories, sugar; high fiber etc.
+
+
+# Attaching cluster labels to the cleaned original dataset
+df_clean <- cereals_cleaned   
+df_clean$Cluster <- final_clusters
+
+
+# Automatically identifying the "healthy" cluster
+# Criteria: low sugar, low fat, low calories, high fiber
+cluster_profiles$health_score <- 
+  -cluster_profiles$sugars -
+  cluster_profiles$fat -
+  cluster_profiles$calories +
+   cluster_profiles$fiber
+
+
+# Selecting the cluster with the highest health score
+healthy_cluster <- cluster_profiles$cluster[which.max(cluster_profiles$health_score)]
+
+
+# Listing cereals in the healthy cluster
+df_clean[df_clean$Cluster == healthy_cluster, "name"]
+
+
+#Interpretation- After performing hierarchical clustering on the nutritional data,the cluster with the lowest sugar, fat, and calorie content and the highest fiber levels is identified as the healthiest group of cereals. These cereals support a balanced diet for children because they provide energy without excessive sugar while offering significant dietary fiber and essential nutrients. Examples include All-Bran, Fiber One, Bran Flakes, Cheerios, Puffed Rice, Puffed Wheat, and other high-fiber, low-sugar cereals.
+
+#The data must be normalized before clustering. The nutritional variables in the dataset are measured on different scales, such as calories measured in the hundreds and fiber in single digits. Normalizing the data ensures that all nutritional attributes contribute equally to the clustering process instead of allowing large-range variables to dominate. However, once the clustering is complete, the original (non-normalized) values should be used to determine which cereals are genuinely healthy because these values reflect real-world nutritional content.
+
+```
+
